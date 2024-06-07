@@ -21,17 +21,17 @@
 
 namespace hriPhysio {
     namespace Core {
-        template <class T> 
+        template <class T>
         class RingBuffer;
     }
 }
 
-template <class T> 
+template <class T>
 class hriPhysio::Core::RingBuffer {
 private:
     /* ============================================================================
     **  Member Variables.
-    ** ============================================================================ */ 
+    ** ============================================================================ */
 
     //-- The main container of the data members.
     std::unique_ptr<T[]> buffer;
@@ -52,26 +52,21 @@ private:
 public:
     /* ============================================================================
     **  Main Constructor.
-    ** 
+    **
     ** @param length    Number of indices to allocate. [Optional arg]
     ** ============================================================================ */
-    RingBuffer(const std::size_t length = 0) : 
+    explicit RingBuffer(const std::size_t length = 0) :
         buffer_length(length),
         buffer_head(0),
         buffer_tail(0),
-        buffer_size(0) {
-    
-        bufferInit(buffer_length);
-    }
+        buffer_size(0)
+        buffer(std::make_unique<T[]>(length)) {}
 
 
     /* ============================================================================
     **  Main Destructor.
     ** ============================================================================ */
-    ~RingBuffer() {
-        //-- Delete managed data.
-        buffer.reset();
-    }
+    ~RingBuffer() = default;
 
 
     /* ============================================================================
@@ -82,7 +77,6 @@ public:
     void setWarnings(bool value) {
         //-- Set the warnings flag.
         warnings = value;
-        return;
     }
 
 
@@ -93,46 +87,31 @@ public:
     ** @param length    Size of buffer to allocate.
     ** ============================================================================ */
     void resize(const std::size_t length) {
-    
+
         //-- Lock the mutex to ensure read/write atomicity.
-        lock.lock();
-    
+        std::scoped_lock guard(lock);
+
         //-- Update length, Update buffer.
         buffer_length = length;
-        bufferInit(buffer_length);
-    
+        buffer = std::make_unique<T[]>(buffer_length);
+
         //-- Unlock the mutex and return.
-        lock.unlock();
-    
-        return;
+        clear();
     }
-    
+
 
     /* ============================================================================
     **  Clear the buffer and set all members to the default value of type.
     ** ============================================================================ */
     void clear() {
-    
+
         //-- Lock the mutex to ensure read/write atomicity.
-        lock.lock();
-    
-        //-- Create a ``zeroed`` instance of template type.
-        T emptyVar;
-    
-        //-- Clear out the data.
-        for (std::size_t idx = 0; idx < buffer_length; ++idx) {
-            buffer[idx] = emptyVar;
-        }
-    
+        std::scoped_lock guard(lock);
+        std::fill(buffer.get(), buffer.get() + buffer_length, T{});
         //-- Set the meta-data to default.
         buffer_size = 0;
         buffer_head = 0;
         buffer_tail = 0;
-    
-        //-- Unlock the mutex and return.
-        lock.unlock();
-    
-        return; 
     }
 
 
@@ -144,45 +123,33 @@ public:
     ** @return Success/Failure of the insertion.
     ** ============================================================================ */
     bool enqueue(const T& item) {
-        
-        //-- Lock the mutex to ensure read/write atomicity.
-        lock.lock();
-    
+        std::scoped_lock guard(lock);
         //-- If buffer space is not allocated, exit.
         if (buffer_length == 0) {
-    
+
             //-- Throw a warning if enabled.
             if (warnings) {
-                std::cerr << "[DEBUG] No buffer allocated to insert into." << std::endl;            
+                std::cerr << "[DEBUG] No buffer allocated to insert into." << std::endl;
             }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
             return false;
         }
-    
+
         //-- If buffer is full, overwrite old data.
         if (full()) {
-            
-            //-- Throw a warning if enabled.
             if (warnings) {
                 std::cerr << "[DEBUG] Buffer Overflow!! Overwriting old data." << std::endl;
             }
-    
             //-- ``Delete`` old data.
             buffer_head = (buffer_head + 1) % buffer_length;
             --buffer_size;
         }
-    
+
         //-- Insert item at the ``back``.
         buffer[buffer_tail] = item;
-        
         //-- Update tail and size.
         buffer_tail = (buffer_tail + 1) % buffer_length;
         ++buffer_size;
-    
         //-- Unlock the mutex and return.
-        lock.unlock();
         return true;
     }
 
@@ -196,50 +163,62 @@ public:
     ** @return Success/Failure of the insertion.
     ** ============================================================================ */
     bool enqueue(const T* items, const std::size_t length) {
-    
+
         //-- Lock the mutex to ensure read/write atomicity.
-        lock.lock();
-    
+        std::scoped_lock guard(lock);
         //-- If length of items exceeds allocated space, exit.
         if (length > buffer_length || buffer_length == 0) {
-    
+
             //-- Throw a warning if enabled.
             if (warnings) {
                 std::cerr << "[DEBUG] Not enough buffer space allocated to insert into." << std::endl;
             }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
             return false;
         }
-    
+
         //-- If buffer is full, overwrite old data.
         if (buffer_size + length >= buffer_length) {
-    
+
             //-- Throw a warning if enabled.
             if (warnings) {
                 std::cerr << "[DEBUG] Buffer Overflow!! Overwriting old data." << std::endl;
             }
-    
+
             //-- ``Delete`` old data.
             buffer_head  = (buffer_head + length) % buffer_length;
             buffer_size -= length;
         }
-    
+
         //-- Insert the items to the ``back``.
         for (std::size_t idx = 0; idx < length; ++idx) {
-    
+
             //-- Copy the item.
             buffer[buffer_tail] = items[idx];
-    
+
             //-- Update tail and size.
             buffer_tail = (buffer_tail + 1) % buffer_length;
             ++buffer_size;
         }
-    
-        //-- Unlock the mutex and return.
-        lock.unlock();
         return true;
+    }
+    std::optional<T> dequeue() {
+        std::scoped_lock guard(lock);
+        if (buffer_length == 0) {
+            if (warnings) {
+                std::cerr << "[DEBUG] No buffer allocated to pop from." << std::endl;
+            }
+            return std::nullopt;
+        }
+        if (empty()) {
+            if (warnings) {
+                std::cerr << "[DEBUG] Buffer Empty!! Cannot pop." << std::endl;
+            }
+            return std::nullopt;
+        }
+        T item = buffer[buffer_head];
+        buffer_head = (buffer_head + 1) % buffer_length;
+        --buffer_size;
+        return item;
     }
 
 
@@ -250,50 +229,52 @@ public:
     **
     ** @return Success/Failure of the withdraw.
     ** ============================================================================ */
-    bool dequeue(T& item) {
-    
-        //-- Lock the mutex to ensure read/write atomicity.
-        lock.lock();
-    
+    bool dequeue(T* items, const std::size_t length, const std::size_t overlap = 0) {
+        std::scoped_lock guard(lock);
         //-- If buffer space is not allocated, exit.
-        if (buffer_length == 0) {
-    
-            //-- Throw a warning if enabled.
+        if (length > buffer_length || buffer_length == 0 || overlap > length) {
             if (warnings) {
-                std::cerr << "[DEBUG] No buffer allocated to pop from." << std::endl;            
+                std::cerr << "[DEBUG] No buffer allocated to pop from." << std::endl;
             }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
             return false;
         }
-    
+
         //-- If buffer is empty, can't pop.
-        if (empty()) {
-            
-            //-- Throw a warning if enabled.
+        if (length > buffer_size) {
             if (warnings) {
                 std::cerr << "[DEBUG] Buffer Empty!! Cannot pop." << std::endl;
             }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
             return false;
         }
-    
-        //-- Copy item at the ``front``.
-        item = buffer[buffer_head];
-    
-        //-- Update head and size.
-        buffer_head = (buffer_head + 1) % buffer_length;
-        --buffer_size;
-    
-        //-- Unlock the mutex and return.
-        lock.unlock();
+
+        std::size_t keep = length - overlap;
+        std::size_t buffer_pos = buffer_head;
+        for (std::size_t idx = 0; idx < length; ++idx) {
+            items[idx] = buffer[buffer_pos];
+            buffer_pos = (buffer_pos + 1) % buffer_length;
+            if (idx < keep) {
+                buffer_head = (buffer_head + 1) % buffer_length;
+                --buffer_size;
+            }
+        }
         return true;
     }
-
-
+    std::optional<T> front() const {
+        std::scoped_lock guard(lock);
+        if (buffer_length == 0) {
+            if (warnings) {
+                std::cerr << "[DEBUG] No buffer allocated to copy from." << std::endl;
+            }
+            return std::nullopt;
+        }
+        if (empty()) {
+            if (warnings) {
+                std::cerr << "[DEBUG] Buffer Empty!! Cannot copy." << std::endl;
+            }
+            return std::nullopt;
+        }
+        return buffer[buffer_head];
+    }
     /* ============================================================================
     **  Dequeue multiple pieces of data from the buffer.
     **
@@ -302,180 +283,52 @@ public:
     **
     ** @return Success/Failure of the withdraw.
     ** ============================================================================ */
-    bool dequeue(T* items, const std::size_t length, const std::size_t overlap = 0) {
-    
-        //-- Lock the mutex to ensure read/write atomicity.
-        lock.lock();
-    
-        //-- If length of items exceeds allocated space, exit.
-        if (length > buffer_length || buffer_length == 0 || overlap > length) {
-    
-            //-- Throw a warning if enabled.
-            if (warnings) {
-                std::cerr << "[DEBUG] Length requested exceeds available buffer space." << std::endl;
-            }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
-            return false;
-        }
-        
-        //-- If requesting more items than what's available, exit.
-        if (length > buffer_size) {
-            
-            //-- Throw a warning if enabled.
-            if (warnings) {
-                std::cerr << "[DEBUG] Not enough items in the buffer to satisfy requested length." << std::endl;
-            }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
-            return false;
-        }
-    
-        //-- Set a range of values to keep at the end of the copy.
-        std::size_t keep = length - overlap;
-        
-        //-- Copy items at the ``front``.
-        std::size_t buffer_pos = buffer_head;
-        for (std::size_t idx = 0; idx < length; ++idx) {
-    
-            //-- Copy the item.
-            items[idx] = buffer[buffer_pos];
-            buffer_pos = (buffer_pos + 1) % buffer_length;
-
-            if (idx < keep) {
-                //-- Update head and size.
-                buffer_head = (buffer_head + 1) % buffer_length;
-                --buffer_size;
-            }
-        }
-    
-        //-- Unlock the mutex and return.
-        lock.unlock();
-        return true;
-    }
-
-
-    /* ============================================================================
-    **  Copy a single piece of data from the buffer without popping them.
-    **
-    ** @param item    Reference to a single data to copy from the buffer.
-    **
-    ** @return Success/Failure of the copy.
-    ** ============================================================================ */
     bool front(T& item) {
-    
         //-- Lock the mutex to ensure read/write atomicity.
-        lock.lock();
-    
+        std::scoped_lock guard(lock);
+
+
         //-- If buffer space is not allocated, exit.
-        if (buffer_length == 0) {
-    
+        if (length > buffer_length || buffer_length == 0) {
             //-- Throw a warning if enabled.
             if (warnings) {
-                std::cerr << "[DEBUG] No buffer allocated to copy from." << std::endl;            
+                std::cerr << "[DEBUG] No buffer allocated to copy from." << std::endl;
             }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
             return false;
         }
-    
-        //-- If buffer is empty, can't copy.
-        if (empty()) {
-            
+
+        //-- If buffer is less than buffer size , can't copy.
+        if (length > buffer_size) {
             //-- Throw a warning if enabled.
             if (warnings) {
                 std::cerr << "[DEBUG] Buffer Empty!! Cannot copy." << std::endl;
             }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
             return false;
         }
-        
+
         //-- Copy item at the ``front`` without changing head or size.
-        item = buffer[buffer_head];
-    
-        //-- Unlock the mutex and return.
-        lock.unlock();
-        return true;
-    }
-
-
-    /* ============================================================================
-    **  Copy multiple pieces of data from the buffer without popping them.
-    **
-    ** @param items     Array of data to copy to from the buffer.
-    ** @param length    Length of the array attempting to copy.
-    **
-    ** @return Success/Failure of the copy.
-    ** ============================================================================ */
-    bool front(T* items, const std::size_t length) {
-    
-        //-- Lock the mutex to ensure read/write atomicity.
-        lock.lock();
-    
-        //-- If length of items exceeds allocated space, exit.
-        if (length > buffer_length || buffer_length == 0) {
-    
-            //-- Throw a warning if enabled.
-            if (warnings) {
-                std::cerr << "[DEBUG] Length requested exceeds available buffer space." << std::endl;
-            }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
-            return false;
-        }
-    
-        //-- If requesting more items than what's available, exit.
-        if (length > buffer_size) {
-            
-            //-- Throw a warning if enabled.
-            if (warnings) {
-                std::cerr << "[DEBUG] Not enough items in the buffer to satisfy requested length." << std::endl;
-            }
-    
-            //-- Unlock the mutex and return.
-            lock.unlock();
-            return false;
-        }
-    
-        //-- Make a copy of the real head.
         std::size_t temp_head = buffer_head;
-    
-        //-- Copy items at the ``front``.
         for (std::size_t idx = 0; idx < length; ++idx) {
-    
-            //-- Copy the item.
             items[idx] = buffer[temp_head];
-    
-            //-- Update temporary head without touching size.
             temp_head = (temp_head + 1) % buffer_length;
         }
-    
-        //-- Unlock the mutex and return.
-        lock.unlock();
         return true;
     }
-
 
     /* ============================================================================
     **  Get a pointer to the first element.
     **    Warning: Once you have the pointer does not guarantee atomicity!!
-    **  
+    **
     ** @return The pointer to the first element (or NULL if unallocated).
     ** ============================================================================ */
-    inline T* data() {
+    T* data() {
         //-- get a pointer to the unique_ptr if allocated.
-        return (buffer_length != 0) ? buffer.get() : 0 /* NULL */;
+        return buffer_length != 0 ? buffer.get() : nullptr;
     }
 
-    inline const T* data() const {
+    const T* data() const {
         //-- get a pointer to the unique_ptr if allocated.
-        return (buffer_length != 0) ? buffer.get() : 0 /* NULL */;
+        return buffer_length != 0 ? buffer.get() : nullptr;
     }
 
 
@@ -529,7 +382,7 @@ private:
     ** ============================================================================ */
     void bufferInit(const std::size_t length) {
         //-- Delete managed data and initiallize new sized array.
-        buffer.reset(new T[ length ]);
+        buffer = std::make_unique<T[]>(length);
     }
 };
 
@@ -538,10 +391,10 @@ private:
 //--
 //-- Authors Notes.
 //--
-//-- Putting definitions of a template class outside of the 
-//-- header file requires us  to explicitly state what data 
-//-- types are supported before  hand for the library to be 
-//-- properly linked  to  executables.  As a result we have 
+//-- Putting definitions of a template class outside of the
+//-- header file requires us  to explicitly state what data
+//-- types are supported before  hand for the library to be
+//-- properly linked  to  executables.  As a result we have
 //-- chosen to have the definitions in this file.
 //--
 //-- See this post for more information:
